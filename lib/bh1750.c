@@ -1,4 +1,3 @@
-// bh1750.c - Implementação do driver BH1750
 #include "bh1750.h"
 #include "pico/stdlib.h"
 #include <stddef.h>

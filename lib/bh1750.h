@@ -1,4 +1,3 @@
-// bh1750.h - Driver simples para o BH1750 (GY-302) no RP2040 (Pico SDK)
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
