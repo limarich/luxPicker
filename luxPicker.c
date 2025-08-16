@@ -4,6 +4,11 @@
 #include "ssd1306.h"
 #include "font.h"
 #include "pico/bootrom.h"
+#include "hardware/clocks.h"
+#include "hardware/pio.h"
+#include "leds.h"
+#include "pio_matrix.pio.h"
+#include <math.h>
 
 //  GY-33
 #include "gy33.h"
@@ -23,6 +28,10 @@
 #define OLED_SCL 15
 #define OLED_ADDR 0x3C
 
+const uint RED_PIN = 13;
+const uint GREEN_PIN = 11;
+const uint BLUE_PIN = 12;
+
 //  Botão para BOOTSEL
 #define botaoB 6
 static void gpio_irq_handler(uint gpio, uint32_t events)
@@ -32,8 +41,54 @@ static void gpio_irq_handler(uint gpio, uint32_t events)
     reset_usb_boot(0, 0);
 }
 
+static inline float clampf(float x, float lo, float hi)
+{
+    return x < lo ? lo : (x > hi ? hi : x);
+}
+
+// Converte R/G/B brutos + C em [0..1] usando normalização por C
+static inline void rgb_from_clear(uint16_t r, uint16_t g, uint16_t b, uint16_t c,
+                                  float *rf, float *gf, float *bf)
+{
+    float cc = (c == 0) ? 1.0f : (float)c;
+    float rN = (float)r / cc, gN = (float)g / cc, bN = (float)b / cc;
+
+    // normaliza pela componente máxima para preservar saturação visual da cor
+    float m = fmaxf(rN, fmaxf(gN, bN));
+    if (m > 0.0f)
+    {
+        rN /= m;
+        gN /= m;
+        bN /= m;
+    }
+
+    // gamma perceptual
+    const float inv_gamma = 1.0f / 2.2f;
+    *rf = powf(clampf(rN, 0.f, 1.f), inv_gamma);
+    *gf = powf(clampf(gN, 0.f, 1.f), inv_gamma);
+    *bf = powf(clampf(bN, 0.f, 1.f), inv_gamma);
+}
+
+// MME (exponential moving average) para suavizar brilho
+static inline float ema(float prev, float now, float alpha)
+{
+    return prev * (1.0f - alpha) + now * alpha;
+}
+
 int main(void)
 {
+
+    PIO pio;
+    uint sm;
+    // configurações da PIO
+    pio = pio0;
+    uint offset = pio_add_program(pio, &pio_matrix_program);
+    sm = pio_claim_unused_sm(pio, true);
+    pio_matrix_program_init(pio, sm, offset, LED_PIN);
+
+    pixel draw[PIXELS];
+    test_matrix(pio, sm);
+
     // Configura BOOTSEL no botão B
     gpio_init(botaoB);
     gpio_set_dir(botaoB, GPIO_IN);
@@ -81,6 +136,19 @@ int main(void)
     char buf_r[12], buf_g[12], buf_b[12], buf_c[12], buf_lux[16];
     bool cor = true;
 
+    // Configuração dos pinos GPIO do LED RGB
+    gpio_init(RED_PIN);
+    gpio_init(GREEN_PIN);
+    gpio_init(BLUE_PIN);
+
+    gpio_set_dir(RED_PIN, GPIO_OUT);
+    gpio_set_dir(GREEN_PIN, GPIO_OUT);
+    gpio_set_dir(BLUE_PIN, GPIO_OUT);
+
+    gpio_put(RED_PIN, 1);
+
+    float smooth_brightness = 0.3f; // ponto inicial
+
     while (true)
     {
         //  Leitura GY-33
@@ -91,8 +159,33 @@ int main(void)
         float lux = 0.0f;
         bh1750_read_lux(&luxm, &lux);
 
-        //  Log serial
-        printf("R=%u, G=%u, B=%u, C=%u, Lux=%.1f\n", r, g, b, c, lux);
+        float rf, gf, bf;
+        rgb_from_clear(r, g, b, c, &rf, &gf, &bf);
+
+        // referências de brilho e lux
+        const float LUX_REF = 300.0f;
+        const float C_REF = 12000.0f;
+
+        // Normalizações individuais
+        float bright_lux = clampf(lux / LUX_REF, 0.05f, 1.0f);
+        float bright_c = clampf((float)c / C_REF, 0.05f, 1.0f);
+
+        //  média geométrica do clear com o lux
+        float brightness = sqrtf(bright_lux * bright_c);
+
+        // Suavização
+        smooth_brightness = ema(smooth_brightness, brightness, 0.2f);
+
+        // Aplica brilho global à cor
+        rf *= smooth_brightness;
+        gf *= smooth_brightness;
+        bf *= smooth_brightness;
+
+        pixel displayed = {(int)(rf * 255), (int)(gf * 255), (int)(bf * 255), smooth_brightness};
+        draw_color(pio0, sm, displayed);
+
+        printf("rf=%.3f, gf=%.3f, bf=%.3f, C=%u, Lux=%.1f, Bright=%.3f\n",
+               rf, gf, bf, c, lux, smooth_brightness);
 
         //  Formata strings
         snprintf(buf_r, sizeof(buf_r), "%u R", r);
