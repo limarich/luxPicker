@@ -5,6 +5,7 @@
 #include "font.h"
 #include "pico/bootrom.h"
 #include "hardware/clocks.h"
+#include "hardware/pwm.h"
 #include "hardware/pio.h"
 #include "leds.h"
 #include "pio_matrix.pio.h"
@@ -27,10 +28,12 @@
 #define OLED_SDA 14
 #define OLED_SCL 15
 #define OLED_ADDR 0x3C
+#define BUZZER_PIN 21
 
 const uint RED_PIN = 13;
 const uint GREEN_PIN = 11;
 const uint BLUE_PIN = 12;
+uint buzzer_slice;
 
 //  Botão para BOOTSEL
 #define botaoB 6
@@ -39,6 +42,14 @@ static void gpio_irq_handler(uint gpio, uint32_t events)
     (void)gpio;
     (void)events;
     reset_usb_boot(0, 0);
+}
+
+// Função para tocar o beep
+void beep(uint ms) {
+    pwm_set_gpio_level(BUZZER_PIN, 2500); // 50% duty
+    pwm_set_enabled(buzzer_slice, true);
+    sleep_ms(ms);
+    pwm_set_enabled(buzzer_slice, false);
 }
 
 static inline float clampf(float x, float lo, float hi)
@@ -77,6 +88,11 @@ static inline float ema(float prev, float now, float alpha)
 
 int main(void)
 {
+    gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
+    buzzer_slice = pwm_gpio_to_slice_num(BUZZER_PIN);
+    pwm_set_clkdiv(buzzer_slice, 4.0);      // Frequência ~10kHz audível
+    pwm_set_wrap(buzzer_slice, 5000);
+    pwm_set_enabled(buzzer_slice, false);   // Começa desligado
 
     PIO pio;
     uint sm;
@@ -187,12 +203,15 @@ int main(void)
         printf("rf=%.3f, gf=%.3f, bf=%.3f, C=%u, Lux=%.1f, Bright=%.3f\n",
                rf, gf, bf, c, lux, smooth_brightness);
 
+        if(lux < 100) // Emite bips intermitentes enquanto lux estiver abaixo de 100
+            beep(100);
+
         //  Formata strings
         snprintf(buf_r, sizeof(buf_r), "%u R", r);
         snprintf(buf_g, sizeof(buf_g), "%u G", g);
         snprintf(buf_b, sizeof(buf_b), "%u B", b);
         snprintf(buf_c, sizeof(buf_c), "%u C", c);
-        snprintf(buf_lux, sizeof(buf_lux), "%.1f Lux", lux);
+        snprintf(buf_lux, sizeof(buf_lux), "%.0f Lux", lux);
 
         //  OLED
         ssd1306_fill(&ssd, !cor);
@@ -202,8 +221,8 @@ int main(void)
         ssd1306_draw_string(&ssd, buf_r, 5, 28);
         ssd1306_draw_string(&ssd, buf_g, 5, 40);
         ssd1306_draw_string(&ssd, buf_b, 5, 52);
-        ssd1306_draw_string(&ssd, buf_c, 70, 28);
-        ssd1306_draw_string(&ssd, buf_lux, 70, 40);
+        ssd1306_draw_string(&ssd, buf_c, 65, 28);
+        ssd1306_draw_string(&ssd, buf_lux, 65, 40);
         ssd1306_send_data(&ssd);
 
         cor = !cor;
