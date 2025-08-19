@@ -30,22 +30,40 @@
 #define OLED_ADDR 0x3C
 #define BUZZER_PIN 21
 
+// BOTÕES
+#define BUTTON_B 6
+#define BUTTON_A 5
+
 const uint RED_PIN = 13;
 const uint GREEN_PIN = 11;
 const uint BLUE_PIN = 12;
 uint buzzer_slice;
+uint last_a_interruption = 0;
+enum COLOR_MODE
+{
+    COLOR_RED,
+    COLOR_GREEN,
+    COLOR_BLUE
+} color_mode;
 
 //  Botão para BOOTSEL
-#define botaoB 6
 static void gpio_irq_handler(uint gpio, uint32_t events)
 {
-    (void)gpio;
-    (void)events;
-    reset_usb_boot(0, 0);
+    const uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (gpio == BUTTON_B)
+    {
+        reset_usb_boot(0, 0);
+    }
+    else if (gpio == BUTTON_A && now - last_a_interruption > 200)
+    {
+        color_mode = (color_mode + 1) % 3;
+        last_a_interruption = now;
+    }
 }
 
 // Função para tocar o beep
-void beep(uint ms) {
+void beep(uint ms)
+{
     pwm_set_gpio_level(BUZZER_PIN, 2500); // 50% duty
     pwm_set_enabled(buzzer_slice, true);
     sleep_ms(ms);
@@ -90,9 +108,9 @@ int main(void)
 {
     gpio_set_function(BUZZER_PIN, GPIO_FUNC_PWM);
     buzzer_slice = pwm_gpio_to_slice_num(BUZZER_PIN);
-    pwm_set_clkdiv(buzzer_slice, 4.0);      // Frequência ~10kHz audível
+    pwm_set_clkdiv(buzzer_slice, 4.0); // Frequência ~10kHz audível
     pwm_set_wrap(buzzer_slice, 5000);
-    pwm_set_enabled(buzzer_slice, false);   // Começa desligado
+    pwm_set_enabled(buzzer_slice, false); // Começa desligado
 
     PIO pio;
     uint sm;
@@ -105,11 +123,18 @@ int main(void)
     pixel draw[PIXELS];
     test_matrix(pio, sm);
 
+    // Configura botao A
+    gpio_init(BUTTON_A);
+    gpio_set_dir(BUTTON_A, GPIO_IN);
+    gpio_pull_up(BUTTON_A);
     // Configura BOOTSEL no botão B
-    gpio_init(botaoB);
-    gpio_set_dir(botaoB, GPIO_IN);
-    gpio_pull_up(botaoB);
-    gpio_set_irq_enabled_with_callback(botaoB, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
+    gpio_init(BUTTON_B);
+    gpio_set_dir(BUTTON_B, GPIO_IN);
+    gpio_pull_up(BUTTON_B);
+
+    // habilita interrupções na borda de decida
+    gpio_set_irq_enabled(BUTTON_A, GPIO_IRQ_EDGE_FALL, true);
+    gpio_set_irq_enabled_with_callback(BUTTON_B, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
 
     stdio_init_all();
 
@@ -161,7 +186,9 @@ int main(void)
     gpio_set_dir(GREEN_PIN, GPIO_OUT);
     gpio_set_dir(BLUE_PIN, GPIO_OUT);
 
-    gpio_put(RED_PIN, 1);
+    gpio_put(RED_PIN, 0);
+    gpio_put(GREEN_PIN, 0);
+    gpio_put(BLUE_PIN, 0);
 
     float smooth_brightness = 0.3f; // ponto inicial
 
@@ -203,7 +230,7 @@ int main(void)
         printf("rf=%.3f, gf=%.3f, bf=%.3f, C=%u, Lux=%.1f, Bright=%.3f\n",
                rf, gf, bf, c, lux, smooth_brightness);
 
-        if(lux < 100) // Emite bips intermitentes enquanto lux estiver abaixo de 100
+        if (lux < 100) // Emite bips intermitentes enquanto lux estiver abaixo de 100
             beep(100);
 
         //  Formata strings
@@ -226,6 +253,27 @@ int main(void)
         ssd1306_send_data(&ssd);
 
         cor = !cor;
+
+        switch (color_mode)
+        {
+        case COLOR_RED:
+            gpio_put(RED_PIN, 1);
+            gpio_put(GREEN_PIN, 0);
+            gpio_put(BLUE_PIN, 0);
+            break;
+        case COLOR_GREEN:
+            gpio_put(RED_PIN, 0);
+            gpio_put(GREEN_PIN, 1);
+            gpio_put(BLUE_PIN, 0);
+            break;
+        case COLOR_BLUE:
+            gpio_put(RED_PIN, 0);
+            gpio_put(GREEN_PIN, 0);
+            gpio_put(BLUE_PIN, 1);
+            break;
+        default:
+            break;
+        }
         sleep_ms(500);
     }
 }
